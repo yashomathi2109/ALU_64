@@ -1,10 +1,4 @@
-//--------------------------------------------------//
-//	**Project: 5-Stage pipelined RISC-V softcore
-//	
-//	**Module name and description:
-//
-//	**Author: Adithya Ramesh, aramesh1@wpi.edu
-//--------------------------------------------------//
+
 
 module alu_64	(input		[4:0]	opcode,
 		input		[63:0]	A, B,
