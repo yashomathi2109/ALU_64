@@ -1,110 +1,186 @@
+/*
+ * DADDA_64 - 64x64 Bit Dadda Multiplier
+ * 
+ * This module implements a high-performance 64x64 bit multiplier using the Dadda algorithm,
+ * which is an optimized version of the Wallace tree multiplier. The design uses a hierarchical
+ * approach with Carry Save Adders (CSA) to efficiently reduce partial products.
+ * 
+ * Architecture:
+ * - Hierarchical design: 8x8 → 16x16 → 32x32 → 64x64
+ * - Uses Carry Save Adders (CSA) for 3:2 reduction
+ * - Uses Half Adders (HA) for 2:1 reduction
+ * - Multi-stage reduction to minimize carry propagation
+ * 
+ * Key Benefits:
+ * - Faster than traditional array multipliers
+ * - Efficient area utilization
+ * - Predictable timing characteristics
+ * - Scalable architecture
+ */
+
 module dadda_64(A,B,mult_result);
-    input [63:0]A;
-    input [63:0]B;  
-    output wire [127:0] mult_result;
+    input [63:0]A;           // First 64-bit operand
+    input [63:0]B;           // Second 64-bit operand
+    output wire [127:0] mult_result;  // 128-bit multiplication result
 
+// ========================================
+// INTERNAL SIGNALS AND WIRES
+// ========================================
 
+// Outputs from the four 32x32 Dadda multipliers
+// These represent the partial products that need to be combined
+wire [63:0]y11,y12,y21,y22;
 
-//outputs of 16*16 dadda.      
-    wire [63:0]y11,y12,y21,y22;
+// Sum and carry signals for the final reduction stages
+// s_1 and c_1 are from stage 1 reduction (3:2)
+// c_2 contains carries from stage 2 reduction
+wire [63:0]s_1,c_1; 
+wire [95:0]c_2;
 
-//sum and carry of final 2 stages.      
-    wire [63:0]s_1,c_1; 
-    wire [95:0]c_2;
+// ========================================
+// INSTANTIATE 32x32 MULTIPLIERS
+// ========================================
+// Break down 64x64 multiplication into four 32x32 multiplications
+// This allows for parallel computation and better timing
+dadda_32 d1 (.A(A[31:0]),  .B(B[31:0]),  .mult_result(y11));  // Lower A × Lower B
+dadda_32 d2 (.A(A[31:0]),  .B(B[63:32]), .mult_result(y12));  // Lower A × Upper B  
+dadda_32 d3 (.A(A[63:32]), .B(B[31:0]),  .mult_result(y21));  // Upper A × Lower B
+dadda_32 d4 (.A(A[63:32]), .B(B[63:32]), .mult_result(y22));  // Upper A × Upper B
 
-// Instantiate 32x32 multipliers
-    dadda_32 d1 (.A(A[31:0]),  .B(B[31:0]),  .mult_result(y11));
-    dadda_32 d2 (.A(A[31:0]),  .B(B[63:32]), .mult_result(y12));
-    dadda_32 d3 (.A(A[63:32]), .B(B[31:0]),  .mult_result(y21));
-    dadda_32 d4 (.A(A[63:32]), .B(B[63:32]), .mult_result(y22));
+// ========================================
+// ASSIGN LEAST SIGNIFICANT BITS
+// ========================================
+// The least significant 32 bits come directly from the first multiplier
+// No reduction is needed for these bits
+assign mult_result[31:0] = y11[31:0];
 
-// Assign least significant bits directly
-    assign mult_result[31:0] = y11[31:0];
-
-//Stage 1 - reducing fom 3 to 2
-    genvar i;
-    generate
-        for (i = 1; i <= 63; i = i + 1) begin : stage1_csa
-            if (i == 1) begin
-                csa_dadda c_first (.A(y11[32]), .B(y12[0]), .Cin(y21[0]), .mult_result(s_1[0]), .Cout(c_1[0]));
-                assign mult_result[32] = s_1[0];
-            end else if (i <= 31) begin
-                csa_dadda c_inst (
-                    .A(y11[i + 32]),
-                    .B(y12[i]),
-                    .Cin(y21[i]),
-                    .mult_result(s_1[i]),
-                    .Cout(c_1[i])
-                );
-            end else begin
-                csa_dadda c_inst (
-                    .A(y22[i - 32]),
-                    .B(y12[i]),
-                    .Cin(y21[i]),
-                    .mult_result(s_1[i]),
-                    .Cout(c_1[i])
-                );
-            end
-        end
-    endgenerate
-
-    // Stage 2 – 2:1 reduction using csa_dadda and 1 HA
-    HA h1 (.a(s_1[1]), .b(c_1[0]), .Sum(mult_result[33]), .Cout(c_2[0]));
-
-    generate
-        for (i = 2; i <= 63; i = i + 1) begin : stage2_csa
+// ========================================
+// STAGE 1: 3:2 REDUCTION
+// ========================================
+// Reduce from 3 partial products to 2 using Carry Save Adders
+// This stage handles the overlapping bits from the 32x32 multipliers
+genvar i;
+generate
+    for (i = 1; i <= 63; i = i + 1) begin : stage1_csa
+        if (i == 1) begin
+            // First bit: combine y11[32], y12[0], y21[0]
+            csa_dadda c_first (.A(y11[32]), .B(y12[0]), .Cin(y21[0]), .mult_result(s_1[0]), .Cout(c_1[0]));
+            assign mult_result[32] = s_1[0];  // Direct assignment for bit 32
+        end else if (i <= 31) begin
+            // Bits 2-31: combine y11[i+32], y12[i], y21[i]
             csa_dadda c_inst (
-                .A(s_1[i]),
-                .B(c_1[i - 1]),
-                .Cin(c_2[i - 2]),
-                .mult_result(mult_result[i + 32]),
-                .Cout(c_2[i - 1])
+                .A(y11[i + 32]),
+                .B(y12[i]),
+                .Cin(y21[i]),
+                .mult_result(s_1[i]),
+                .Cout(c_1[i])
+            );
+        end else begin
+            // Bits 32-63: combine y22[i-32], y12[i], y21[i]
+            csa_dadda c_inst (
+                .A(y22[i - 32]),
+                .B(y12[i]),
+                .Cin(y21[i]),
+                .mult_result(s_1[i]),
+                .Cout(c_1[i])
             );
         end
-    endgenerate
+    end
+endgenerate
 
-    // Final CSA + HAs to finish reduction
-    csa_dadda c_last (.A(y22[32]), .B(c_1[63]), .Cin(c_2[62]), .mult_result(mult_result[95]), .Cout(c_2[63]));
+// ========================================
+// STAGE 2: 2:1 REDUCTION
+// ========================================
+// Reduce from 2 partial products to 1 using CSA and Half Adders
+// Start with a Half Adder for the first bit
+HA h1 (.a(s_1[1]), .b(c_1[0]), .Sum(mult_result[33]), .Cout(c_2[0]));
 
-    generate
-        for (i = 0; i < 31; i = i + 1) begin : final_ha
-            HA h_inst (
-                .a(y22[i + 33]),
-                .b(c_2[i + 63]),
-                .Sum(mult_result[i + 96]),
-                .Cout(c_2[i + 64])
-            );
-        end
-    endgenerate
+// Continue with CSA for remaining bits
+generate
+    for (i = 2; i <= 63; i = i + 1) begin : stage2_csa
+        csa_dadda c_inst (
+            .A(s_1[i]),           // Sum from stage 1
+            .B(c_1[i - 1]),       // Carry from stage 1
+            .Cin(c_2[i - 2]),     // Carry from stage 2
+            .mult_result(mult_result[i + 32]),  // Final result bit
+            .Cout(c_2[i - 1])     // Carry to next bit
+        );
+    end
+endgenerate
+
+// ========================================
+// FINAL REDUCTION STAGES
+// ========================================
+// Final CSA to combine remaining signals
+csa_dadda c_last (.A(y22[32]), .B(c_1[63]), .Cin(c_2[62]), .mult_result(mult_result[95]), .Cout(c_2[63]));
+
+// Final Half Adders to complete the reduction
+generate
+    for (i = 0; i < 31; i = i + 1) begin : final_ha
+        HA h_inst (
+            .a(y22[i + 33]),      // Remaining bits from y22
+            .b(c_2[i + 63]),      // Carries from previous stage
+            .Sum(mult_result[i + 96]),  // Final result bits 96-126
+            .Cout(c_2[i + 64])    // Final carries
+        );
+    end
+endgenerate
 
 endmodule
 
 
-module mult_output(  input [63:0]A,
-    		     input [63:0]B,
+// ========================================
+// MULTIPLIER OUTPUT SELECTION MODULE
+// ========================================
+/*
+ * This module handles the output selection for different multiplication operations
+ * based on the opcode. It can provide either the lower 64 bits (mul) or upper
+ * 64 bits (mulhu) of the 128-bit multiplication result.
+ * 
+ * Operations:
+ * - MUL: Returns lower 64 bits (bits 63:0)
+ * - MULHU: Returns upper 64 bits (bits 127:64) for unsigned multiplication
+ * - MULH: Could be added for signed upper multiplication
+ */
+module mult_output(  input [63:0]A,           // First 64-bit operand
+    		     input [63:0]B,           // Second 64-bit operand
 		     input [4:0]opcode,        // Opcode to choose between mul, mulh, mulhu
-    		     output reg  [63:0] Y
+    		     output reg  [63:0] Y   // 64-bit output result
 		    );
+
+// Internal signal to store the full 128-bit multiplication result
 reg	[127:0]	temp_rez;
-localparam mul = 5'b01100, mulhu = 5'b01111;
+
+// Operation codes for multiplication operations
+localparam mul = 5'b01100, mulhu = 5'b01111;  // MUL and MULHU opcodes
+
+// Instantiate the 64x64 Dadda multiplier
 dadda_64	multiplier (A, B, temp_rez);
 
-
+// Output selection logic based on opcode
 always @ (*) begin
-
 	case(opcode)
+		// MUL operation: return lower 64 bits of result
+		// This is the standard multiplication result
     		mul: begin
-    		        Y = temp_rez[63:0];   //Use the lower 32 bits of the Dadda multiplier's 64-bit result
+    		        Y = temp_rez[63:0];   // Use the lower 64 bits of the Dadda multiplier's 128-bit result
     		end
 		 
+		// MULH operation: return upper 64 bits for signed multiplication
+		// Currently commented out but could be implemented
     	//	mulh: begin
     	//		Y = temp_rez[63:32];  // High signed multiplication result
     	//	end
+		
+		// MULHU operation: return upper 64 bits for unsigned multiplication
+		// Useful for high-precision arithmetic and overflow detection
     		mulhu: begin
     			Y = temp_rez[127:64];  // High unsigned multiplication result
     		end
+		
+		// Default case: return zero for undefined operations
 		default: begin
-    			Y = 64'b0;  // High unsigned multiplication result
+    			Y = 64'b0;  // Return zero for undefined opcodes
 		end
 	endcase
 end
